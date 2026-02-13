@@ -26,6 +26,8 @@ const MainModule = require('./modules/main-module'),
         .option('-m, --model <modelname>','model name to use')
         .option('-me, --model-endpoint <url>', 'specify a custom OpenAI-compatible model endpoint to use', null)
         .option('-w, --context-window <tokens>', 'specify a custom LLM context window limit which is obeyed', 8192)
+        .option('--gemini', 'use Google Gemini / Generative API instead of OpenAI')
+        .option('--no-local-fallback', 'disable local deterministic fallback when LLM APIs are unavailable')
         .option('-a, --run-attack <filepath>', 'attack the forms from a file')
         .option('-t, --timeout <mins>', 'timeout after which the entire scan stops (in minutes)')
         .option('-c, --crawl-timeout <mins>', 'timeout after which the crawling phase stops (in minutes)')

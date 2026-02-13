@@ -124,10 +124,12 @@ class TasksModule {
     }
 
     getCurrentTask() {
+        if (this.taskQueue[this.taskCounter] === undefined) return '';
         return this.taskQueue[this.taskCounter][1];
     }
 
     getCurrentTaskTrace() {
+        if (this.taskQueue[this.taskCounter] === undefined) return [];
         return this.taskQueue[this.taskCounter][0];
     }
 

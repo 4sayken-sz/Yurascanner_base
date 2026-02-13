@@ -115,12 +115,22 @@ class MainModule {
         await this.setup();
 
         // Navigate to start edge first (and try to log in)
-        await this.pageWrapper.goto(this.startUrl);
-	await util.sleep(5000);
+        try {
+            await this.pageWrapper.goto(this.startUrl);
+        } catch (e) {
+            console.log(errorColor('[!] Could not navigate to start URL, aborting crawl: ' + e));
+            return;
+        }
+        await util.sleep(5000);
         await this.loginModule.loginIfPossible();
 
         // Sometimes redirect after login fails, so let's visit start page again
-        await this.pageWrapper.goto(this.startUrl);
+        try {
+            await this.pageWrapper.goto(this.startUrl);
+        } catch (e) {
+            console.log(errorColor('[!] Could not navigate to start URL after login, aborting crawl: ' + e));
+            return;
+        }
         await this.loginModule.loginIfPossible();
 
         if (program.opts().runAttack) {
@@ -146,7 +156,12 @@ class MainModule {
                 return;
             }
 
-            await this.pageWrapper.goto(this.startUrl);
+            try {
+                await this.pageWrapper.goto(this.startUrl);
+            } catch (e) {
+                console.log(errorColor('[!] Could not navigate to start URL after autotask crawl, aborting crawl: ' + e));
+                return;
+            }
             await this.loginModule.loginIfPossible();
         } else {
             this.tasksModule.readTasksFromFile();
@@ -320,7 +335,12 @@ class MainModule {
         // Navigate to the task page and try to log in again
         //await this.pageWrapper.goto(this.getCurrentTaskUrl());
         // reset page to root
-        await this.pageWrapper.goto(this.startUrl);
+        try {
+            await this.pageWrapper.goto(this.startUrl);
+        } catch (e) {
+            console.log(errorColor('[!] Could not navigate to start URL when proceeding to next task: ' + e));
+            return true; // abort further processing
+        }
         await this.loginModule.loginIfPossible();
         if (!finished) {
             // replay the trace

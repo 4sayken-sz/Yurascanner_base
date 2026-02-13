@@ -9,6 +9,8 @@ const { isWithinTokenLimit } = require('gpt-tokenizer/model/gpt-3.5-turbo');
 const OpenAI = require("openai");
 const { program } = require('commander');
 require('dotenv').config();
+const LocalLLMFallback = require('./local-llm-fallback');
+const GeminiBridge = require('./gemini-bridge');
 
 // Define chalk colors
 const errorColor = chalk.bold.red;
@@ -36,10 +38,21 @@ class LLMBridge {
 
         if (!program.opts().manual) {
             // Setup LLM API
-            this.openai = new OpenAI({
-                apiKey: this.model.includes('gpt') ? process.env.OPENAI_API_KEY : 'na',
-                baseURL: program.opts().modelEndpoint
-            });
+            const geminiKey = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || '';
+            const useGeminiFlag = program.opts().gemini || false;
+
+            // Prefer explicit --gemini flag or GEMINI_API_KEY; otherwise auto-detect google-style key
+            if ((useGeminiFlag || geminiKey.startsWith('AIza')) && geminiKey) {
+                this.geminiBridge = new GeminiBridge(geminiKey, program.opts().model || 'chat-bison-001');
+                this.clientType = 'gemini';
+            } else {
+                const apiKey = process.env.OPENAI_API_KEY || '';
+                this.openai = new OpenAI({
+                    apiKey: this.model.includes('gpt') ? apiKey : 'na',
+                    baseURL: program.opts().modelEndpoint
+                });
+                this.clientType = 'openai';
+            }
         }
     }
 
@@ -110,44 +123,89 @@ class LLMBridge {
 
 
     async _performApiCall(messages) {
-        let completion;
+        let reply;
 
-        // In case of failure, the request is repeated up to maxApiRetries times
-        for (let attempt = 0; attempt < config.maxApiRetries + 1; attempt++) {
+        // If using Gemini bridge, call it directly (it returns a string)
+        if (this.clientType === 'gemini' && this.geminiBridge) {
             try {
-                completion = await Promise.race([
-                    this.openai.chat.completions.create({
-                        model: this.model,
-                        messages: messages
-                    }),
-                    new Promise((resolve, reject) => {
-                        setTimeout(() => {
-                            reject(new Error('API call timed out.'));
-                        }, config.apiTimeout);
-                    })
-                ]);
-                break;
+                reply = await this.geminiBridge.requestApi(messages);
             } catch (e) {
-                console.log(errorColor(`[!] API error during attempt ${attempt + 1} (${e}).`));
-
-                // Abort if all retries failed
-                if (attempt === config.maxApiRetries) {
-                    console.log(errorColor('[!] Maximum number of retries reached. Exiting...'));
-                    process.exit(1);
+                console.log(errorColor('[!] Gemini API error: ' + e));
+                // fallback to local deterministic LLM only if local fallback is enabled
+                if (program.opts().localFallback !== false) {
+                    const fallback = new LocalLLMFallback();
+                    return await fallback.requestApi(messages.slice(-1)[0].content);
                 }
-
-                // Check if error was caused by violating context length limit
-                if (String(e).includes('Please reduce the length of the messages.')) {
-                    this._reduceTokenCount(messages);
-                }
-
-                // The delay is doubled for every retry (initial delay * 2^x)
-                let delay = config.initialRetryDelay * (2 ** attempt);
-                await util.sleep(delay);
+                throw e;
             }
-        }
+        } else {
+            let completion;
 
-        let reply = completion.choices[0].message.content;
+            // In case of failure, the request is repeated up to maxApiRetries times
+            for (let attempt = 0; attempt < config.maxApiRetries + 1; attempt++) {
+                try {
+                    completion = await Promise.race([
+                        this.openai.chat.completions.create({
+                            model: this.model,
+                            messages: messages
+                        }),
+                        new Promise((resolve, reject) => {
+                            setTimeout(() => {
+                                reject(new Error('API call timed out.'));
+                            }, config.apiTimeout);
+                        })
+                    ]);
+                    break;
+                } catch (e) {
+                    console.log(errorColor(`[!] API error during attempt ${attempt + 1} (${e}).`));
+
+                    const errStrNow = String(e);
+                    if (errStrNow.includes('You exceeded your current quota') || errStrNow.includes('quota') ||
+                        errStrNow.includes('does not exist or you do not have access to it')) {
+                        console.log(errorColor('[!] Detected unrecoverable OpenAI error, switching to local fallback now.'));
+                        const fallback = new LocalLLMFallback();
+                        return await fallback.requestApi(messages.slice(-1)[0].content);
+                    }
+
+                    // Abort or fallback if all retries failed
+                    if (attempt === config.maxApiRetries) {
+                        const errStrFinal = String(e);
+                        // If the error indicates quota issues or model access problems, use a local deterministic fallback
+                        if (errStrFinal.includes('You exceeded your current quota') || errStrFinal.includes('quota') ||
+                            errStrFinal.includes('does not exist or you do not have access to it')) {
+                            console.log(errorColor('[!] OpenAI unavailable. Using local fallback LLM.'));
+                            const fallback = new LocalLLMFallback();
+                            return await fallback.requestApi(messages.slice(-1)[0].content);
+                        }
+
+                        console.log(errorColor('[!] Maximum number of retries reached. Exiting...'));
+                        process.exit(1);
+                    }
+
+                    // If the error indicates the selected model is not available, fall back to gpt-3.5-turbo
+                    const errStr = String(e);
+                    if (errStr.includes('model `gpt-4`') || errStr.includes('does not exist or you do not have access to it')) {
+                        if (this.model === 'gpt-4') {
+                            console.log(infoColor('[INFO] gpt-4 not available, falling back to gpt-3.5-turbo'));
+                            this.model = 'gpt-3.5-turbo';
+                            // Continue to next attempt with fallback model
+                            continue;
+                        }
+                    }
+
+                    // Check if error was caused by violating context length limit
+                    if (String(e).includes('Please reduce the length of the messages.')) {
+                        this._reduceTokenCount(messages);
+                    }
+
+                    // The delay is doubled for every retry (initial delay * 2^x)
+                    let delay = config.initialRetryDelay * (2 ** attempt);
+                    await util.sleep(delay);
+                }
+            }
+
+            reply = completion.choices[0].message.content;
+        }
 
         //console.log("TOKENS USED:", completion.data.usage.total_tokens);
 

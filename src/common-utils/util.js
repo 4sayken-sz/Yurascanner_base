@@ -86,9 +86,16 @@ async function sleep(milliseconds) {
 }
 
 function getOutputFilepath(identifier) {
-    let filename = `[${identifier}] ` + new Date().toISOString();
+    let timestamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, '-');
+
+    let safeIdentifier = identifier.replace(/[<>:"/\\|?*]/g, '_');
+
+    let filename = `[${safeIdentifier}]_${timestamp}.log`;
     return path.resolve(__dirname, '../../output/', filename);
 }
+
 
 function writeUrlsToOutputFile(filepath, urls, elapsedTime, totalRequestCount, requestCountWithoutLogin) {
     let stream = fs.createWriteStream(filepath, {flags:'a+'});
